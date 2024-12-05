@@ -1,0 +1,5 @@
+customer_name,product_name,order_date,quantity,unit_price,status
+John Doe,Laptop,2024-01-20,1,999.99,pending
+Jane Smith,Smartphone,2024-01-20,2,599.99,completed
+Bob Johnson,Tablet,2024-01-20,3,299.99,processing
+Alice Brown,Monitor,2024-01-20,1,399.99,pending
