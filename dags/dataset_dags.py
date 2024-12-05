@@ -50,7 +50,8 @@ with DAG(
     description='Update test_orders table',
     schedule_interval='*/2 * * * *',  # Run every 10 minutes
     start_date=datetime(2024, 1, 1),
-    catchup=False
+    catchup=False,
+    tags=['sqltable']
 ) as dag_update:
 
     # # Task to insert new order
@@ -99,7 +100,8 @@ with DAG(
     description='A simple DAG with Python tasks',
     schedule=[orders_dataset],  # This DAG is triggered by updates to orders_dataset
     start_date=datetime(2024, 1, 1),
-    catchup=False
+    catchup=False,
+    tags=['sqltable']
 ) as dag1:
 
     start = DummyOperator(task_id='start')
@@ -119,3 +121,82 @@ with DAG(
     start >> hello_task >> date_task >> end
 
 
+with DAG(
+    'python_tasks_downstream_1',
+    default_args=default_args,
+    description='A simple DAG with Python tasks',
+    schedule=[orders_dataset],  # This DAG is triggered by updates to orders_dataset
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['sqltable']
+) as dag1:
+
+    start = DummyOperator(task_id='start')
+    
+    hello_task = PythonOperator(
+        task_id='print_hello',
+        python_callable=print_hello,
+    )
+    
+    date_task = PythonOperator(
+        task_id='print_date',
+        python_callable=print_date,
+    )
+    
+    end = DummyOperator(task_id='end')
+    
+    start >> hello_task >> date_task >> end
+
+
+with DAG(
+    'python_tasks_downstream_2',
+    default_args=default_args,
+    description='A simple DAG with Python tasks',
+    schedule=[orders_dataset],  # This DAG is triggered by updates to orders_dataset
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['sqltable']
+) as dag1:
+
+    start = DummyOperator(task_id='start')
+    
+    hello_task = PythonOperator(
+        task_id='print_hello',
+        python_callable=print_hello,
+    )
+    
+    date_task = PythonOperator(
+        task_id='print_date',
+        python_callable=print_date,
+    )
+    
+    end = DummyOperator(task_id='end')
+    
+    start >> hello_task >> date_task >> end
+
+
+with DAG(
+    'python_tasks_downstream_3',
+    default_args=default_args,
+    description='A simple DAG with Python tasks',
+    schedule=[orders_dataset],  # This DAG is triggered by updates to orders_dataset
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=['sqltable']
+) as dag1:
+
+    start = DummyOperator(task_id='start')
+    
+    hello_task = PythonOperator(
+        task_id='print_hello',
+        python_callable=print_hello,
+    )
+    
+    date_task = PythonOperator(
+        task_id='print_date',
+        python_callable=print_date,
+    )
+    
+    end = DummyOperator(task_id='end')
+    
+    start >> hello_task >> date_task >> end
