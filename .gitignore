@@ -1,2 +1,4 @@
 __pycache__
 /airflow-logs
+.set
+.DS_Store
