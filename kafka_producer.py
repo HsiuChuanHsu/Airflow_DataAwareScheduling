@@ -21,7 +21,7 @@ def produce_messages():
     producer = Producer(conf)
 
     # Sample data types
-    data_types = ['dataset1', 'dateset2', 'dateset3', 'dateset4']
+    data_types = ['dataset1', 'dataset2', 'dataset2', 'dataset3', 'dataset4']
     
     try:
         while True:
@@ -36,7 +36,7 @@ def produce_messages():
             
             # Produce message
             producer.produce(
-                'test-topic',
+                'test-topic_batch',
                 value=message_json.encode('utf-8'),
                 callback=delivery_report
             )
@@ -45,7 +45,7 @@ def produce_messages():
             producer.flush()
             
             print(f'Produced message: {message}')
-            time.sleep(60)  # Wait 1 second between messages
+            time.sleep(30)  # Wait 1 second between messages
                 
     except KeyboardInterrupt:
         print("Stopped by user")
