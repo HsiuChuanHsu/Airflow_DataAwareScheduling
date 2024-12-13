@@ -154,24 +154,92 @@ services:
       timeout: 10s
       retries: 5
 
-  kafka-ui:
-    container_name: kafka-ui
-    image: provectuslabs/kafka-ui:latest
+  klaw-core:
+    image: aivenoy/klaw-core:latest
+    container_name: klaw-core
     ports:
-      - "8082:8080"  # Changed to 8082 because 8080 is used by Airflow webserver
+      - "9097:9097"
+    environment:
+      KLAW_CLUSTERAPI_ACCESS_BASE64_SECRET: VGhpc0lzRXhhY3RseUEzMkNoYXJTdHJpbmdTZWNyZXQK
+      SPRING_DATASOURCE_URL: "jdbc:h2:file:/klaw/klawprodb;DB_CLOSE_ON_EXIT=FALSE;DB_CLOSE_DELAY=-1;MODE=MySQL;CASE_INSENSITIVE_IDENTIFIERS=TRUE;"
+      KLAW_UIAPI_SERVERS: "http://klaw-cluster-api:9343"
+      KLAW_CLUSTERS_KAFKACONNECT_PROTOCOL: "http"
+      KLAW_CLUSTERS_KAFKACONNECT_PORT: "8083"
+      KLAW_ENABLE_DEFAULT_LOGIN: "true"
+      KLAW_ADMIN_USERNAME: "admin"
+      KLAW_ADMIN_PWD: "admin"
+    volumes:
+      - ./klaw_data:/klaw
+    depends_on:
+      - broker
+      - schema-registry
+      - klaw-cluster-api
+
+  klaw-cluster-api:
+    image: aivenoy/klaw-cluster-api:latest
+    container_name: klaw-cluster-api
+    ports:
+      - "9343:9343"
+    environment:
+      KLAW_CLUSTERAPI_ACCESS_BASE64_SECRET: VGhpc0lzRXhhY3RseUEzMkNoYXJTdHJpbmdTZWNyZXQK
+      KLAW_CLUSTERS_KAFKACLUSTER_BOOTSTRAPSERVERS: "broker:29092"
+      KLAW_CLUSTERS_KAFKACLUSTER_PROTOCOL: "PLAINTEXT"
+      KLAW_CLUSTERS_SCHEMAREGISTRY_URL: "http://schema-registry:8081"
+    volumes:
+      - ./klaw_data:/klaw
     depends_on:
       broker:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
-      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
-      KAFKA_CLUSTERS_0_METRICS_PORT: 9101
-      DYNAMIC_CONFIG_ENABLED: 'true'
-    healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080" ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+
+volumes:
+  klaw_data:
+    driver: local
+
+  # akhq:
+  #   image: tchiotludo/akhq
+  #   container_name: akhq
+  #   depends_on:
+  #     broker:
+  #       condition: service_healthy
+  #     schema-registry:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8082:8080"
+  #   environment:
+  #     AKHQ_CONFIGURATION: |
+  #       akhq:
+  #         connections:
+  #           docker-kafka-server:
+  #             properties:
+  #               bootstrap.servers: "broker:29092"
+  #             schema-registry:
+  #               url: "http://schema-registry:8081"
+  #   healthcheck:
+  #     test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+
+  # kafka-ui:
+  #   container_name: kafka-ui
+  #   image: provectuslabs/kafka-ui:latest
+  #   ports:
+  #     - "8082:8080"  # Changed to 8082 because 8080 is used by Airflow webserver
+  #   depends_on:
+  #     broker:
+  #       condition: service_healthy
+  #     schema-registry:
+  #       condition: service_healthy
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: local
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
+  #     KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+  #     KAFKA_CLUSTERS_0_METRICS_PORT: 9101
+  #     DYNAMIC_CONFIG_ENABLED: 'true'
+  #   healthcheck:
+  #     test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080" ]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
