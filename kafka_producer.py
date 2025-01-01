@@ -27,7 +27,9 @@ def produce_messages():
         while True:
             # Create message data
             message = {
-                'data_type': random.choice(data_types),
+                'db_name': 'test',
+                'schema_name': 'test',
+                'table_name': random.choice(data_types),
                 'timestamp': datetime.now().isoformat(),
             }
             
@@ -45,7 +47,7 @@ def produce_messages():
             producer.flush()
             
             print(f'Produced message: {message}')
-            time.sleep(30)  # Wait 1 second between messages
+            time.sleep(10)  # Wait 1 second between messages
                 
     except KeyboardInterrupt:
         print("Stopped by user")
