@@ -4,7 +4,10 @@ from airflow.models.baseoperator import BaseOperator
 from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.operators.dummy import DummyOperator
-# from confluent_kafka import Consumer, KafkaException, KafkaError
+from airflow import __version__ as airflow_version
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+import psycopg2
+import psycopg2.extras
 
 import json
 from datetime import datetime, timedelta
@@ -17,12 +20,6 @@ from kafka_tools import ConsumerTool, KafkaError, KafkaException
 
 
 # Define datasets for different types
-# dataset1_dataset = Dataset("file:///opt/airflow/files/dataset1_data.json")
-# dataset2_dataset = Dataset("file:///opt/airflow/files/dataset2_data.json")
-DATASET_CONFIGS = {
-    'dataset1': Dataset("file:///opt/airflow/files/dataset1_data.json"),
-    'dataset2': Dataset("file:///opt/airflow/files/dataset2_data.json")
-}
 
 default_args = {
     'owner': 'airflow',
@@ -96,29 +93,29 @@ class BatchDynamicOutletKafkaOperator(BaseOperator):
                 try:
                     # Parse the message value
                     message_data = json.loads(msg.value().decode('utf-8'))
-                    data_type = message_data.get('data_type')
+                    db_name = message_data.get('db_name')
+                    schema_name = message_data.get('schema_name')
+                    table_name = message_data.get('table_name')
                     
-                    if data_type in DATASET_CONFIGS:
-                        # 記錄處理信息
-                        logging.info(f"Processed message {processed_count + 1} of type: {data_type}")
-                        logging.info(f"Message timestamp: {message_data.get('timestamp')}")
-                        logging.info(f"Partition: {msg.partition()}, Offset: {msg.offset()}")
-                        
-                        # 添加到活動數據集集合
-                        active_datasets.add(data_type)
-                        messages_processed.append({
-                            'data_type': data_type,
-                            'timestamp': message_data.get('timestamp'),
-                            'partition': msg.partition(),
-                            'offset': msg.offset(),
-                            'raw_data': message_data  # 添加原始數據
-                        })
-                        
-                        processed_count += 1
-                    else:
-                        logging.warning(f"Unknown data type: {data_type}")
-                        continue
-
+                    # 記錄處理信息
+                    logging.info(f"Processed message {processed_count + 1} of type: {table_name}")
+                    logging.info(f"Message timestamp: {message_data.get('timestamp')}")
+                    logging.info(f"Partition: {msg.partition()}, Offset: {msg.offset()}")
+                    
+                    # 添加到活動數據集集合
+                    active_datasets.add(table_name)
+                    messages_processed.append({
+                        'db_name': db_name,
+                        'schema_name': schema_name,
+                        'table_name': table_name,
+                        'timestamp': message_data.get('timestamp'),
+                        'partition': msg.partition(),
+                        'offset': msg.offset(),
+                        'raw_data': message_data  # 添加原始數據
+                    })
+                    
+                    processed_count += 1
+                    
                 except json.JSONDecodeError as e:
                     logging.error(f"Error decoding message: {e}")
                     continue
@@ -158,62 +155,121 @@ class DatasetOutletOperator(BaseOperator):
             self.outlets = []
             return None
             
+        # 建立 Dataset URLs 
+        dataset_urls = []
+        for msg in messages:
+            try:
+                db_name = msg.get('db_name')
+                schema_name = msg.get('schema_name')
+                table_name = msg.get('table_name')
+
+                if all(x is not None for x in [db_name, schema_name, table_name]):
+                    url = f"postgresql://localhost:5432/{db_name}/{schema_name}/{table_name}"
+                    dataset = Dataset(url)
+                    dataset_urls.append(dataset)
+                    logging.info(f"New Dataset: {dataset}")
+
+            except Exception as e:
+                logging.error(f"Error processing message {msg}")
+
         # 識別需要觸發的數據集
-        active_datasets = {msg['data_type'] for msg in messages}
+        active_datasets = {msg['table_name'] for msg in messages}
         
         # 設置 outlets
-        self.outlets = [DATASET_CONFIGS[dataset_type] for dataset_type in active_datasets]
+        self.outlets = dataset_urls
         
         logging.info(f"Processing completed. Total messages: {len(messages)}")
         logging.info(f"Active datasets: {active_datasets}")
         
         return {
             'messages_processed': len(messages),
-            'active_datasets': list(active_datasets)
+            'active_datasets': list(active_datasets),
+            'airflow_version': airflow_version  # 添加 Airflow 版本
         }
     
+# Create table SQL
 # Create table SQL
 CREATE_HISTORY_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS {{ params.schema_name }}.{{ params.table_name }} (
     id SERIAL PRIMARY KEY,
     dag_run_id VARCHAR(250),
     execution_date TIMESTAMP,
-    data_type VARCHAR(100),
+    db_name VARCHAR(100),
+    schema_name VARCHAR(100),
+    table_name VARCHAR(100),
     message_timestamp TIMESTAMP,
     kafka_partition INTEGER,
     kafka_offset BIGINT,
     message_data JSONB,
+    airflow_version VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_{{ params.table_name }}_execution_date 
-    ON {{ params.schema_name }}.{{ params.table_name }}(execution_date);
-CREATE INDEX IF NOT EXISTS idx_{{ params.table_name }}_data_type 
-    ON {{ params.schema_name }}.{{ params.table_name }}(data_type);
+CREATE INDEX IF NOT EXISTS idx_{{ params.table_name }}_table_name
+    ON {{ params.schema_name }}.{{ params.table_name }}(table_name);
+CREATE INDEX IF NOT EXISTS idx_{{ params.table_name }}_schema_name
+    ON {{ params.schema_name }}.{{ params.table_name }}(schema_name);
 """
 
-# Insert SQL for LoadOperator
-INSERT_HISTORY_SQL = """
-INSERT INTO {schema_name}.{table_name} 
-(dag_run_id, execution_date, data_type, message_timestamp, 
- kafka_partition, kafka_offset, message_data)
-SELECT 
-    %(dag_run_id)s as dag_run_id,
-    %(execution_date)s::timestamp as execution_date,
-    %(data_type)s as data_type,
-    %(message_timestamp)s::timestamp as message_timestamp,
-    %(kafka_partition)s as kafka_partition,
-    %(kafka_offset)s as kafka_offset,
-    %(message_data)s::jsonb as message_data
-WHERE NOT EXISTS (
-    SELECT 1 
-    FROM {schema_name}.{table_name}
-    WHERE dag_run_id = %(dag_run_id)s
-    AND data_type = %(data_type)s
-    AND kafka_partition = %(kafka_partition)s
-    AND kafka_offset = %(kafka_offset)s
-);
-"""  
+INSERT_HISTORY_SQL = f"""
+    INSERT INTO {{schema_name}}.{{table_name}} 
+        (dag_run_id, execution_date, db_name, schema_name, table_name, 
+         message_timestamp, kafka_partition, kafka_offset, message_data, airflow_version)
+    VALUES 
+        (%s, %s::timestamp, %s, %s, %s, %s::timestamp, %s, %s, %s::jsonb, %s)
+"""
+
+def store_history_records(
+    schema_name, 
+    table_name, 
+    consume_task_id='consume_kafka',
+    postgres_conn_id='postgres_default',
+    **context
+):
+    """Store message history records in PostgreSQL"""
+    task_instance = context['task_instance']
+    messages = task_instance.xcom_pull(task_ids=consume_task_id)
+    
+    if not messages:
+        logging.warning("No messages to process")
+        return
+    
+    pg_hook = PostgresHook(postgres_conn_id=postgres_conn_id)
+    
+    try:
+        insert_sql = INSERT_HISTORY_SQL.format(
+            schema_name=schema_name,
+            table_name=table_name
+        )
+        
+        # 確保數據類型正確轉換
+        insert_data = [
+            (
+                str(context['dag_run'].run_id),
+                context['execution_date'].isoformat(),
+                str(msg['db_name']),
+                str(msg['schema_name']),
+                str(msg['table_name']),
+                msg['timestamp'].isoformat() if isinstance(msg.get('timestamp'), datetime) else msg.get('timestamp'),
+                int(msg['partition']),
+                int(msg['offset']),
+                json.dumps(dict(msg.get('raw_data', {}))),
+                str(airflow_version)
+            )
+            for msg in messages
+        ]
+        
+        with pg_hook.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_batch(cur, insert_sql, insert_data)
+            conn.commit()
+            
+        logging.info(f"Stored {len(insert_data)} records in history table")
+        
+    except Exception as e:
+        logging.error(f"Error storing history records: {e}")
+        raise
+
 
 # Kafka 主題配置
 KAFKA_TOPICS = {
@@ -262,80 +318,19 @@ with DAG(
     )
     
     # 使用 LoadOperator 存儲歷史記錄
-    store_history_task = LoadOperator(
+    store_history_task = PythonOperator(
         task_id='store_into_history',
-        schema_name=schema_name,
-        table_name=table_name,
-        select_sql='',  # 不需要 select
-        insert_sql=INSERT_HISTORY_SQL,
-        delete_sql='',  # 不需要 delete
-        src_conn_id='postgres_default',
-        tar_conn_id='postgres_default'
+        python_callable=store_history_records,
+        op_kwargs={
+            'schema_name': schema_name,
+            'table_name': table_name,
+            'consume_task_id': 'consume_kafka',  # 可自訂
+            'postgres_conn_id': 'postgres_default'  # 可自訂
+        },
+        provide_context=True,
+        dag=dag
     )
 
     # 設置任務依賴
     consume_task >> process_task
     consume_task >> create_table_task >> store_history_task
-
-
-# 1. Basic Python Task DAG
-def print_hello():
-    print("Hello from Airflow!")
-    return "Hello"
-
-def print_date():
-    print(f"Current date is: {datetime.now()}")
-    return "Date Printed"
-
-with DAG(
-    'kafka_tasks_multi_with_process_downstream_1',
-    default_args=default_args,
-    description='A simple DAG with Python tasks',
-    schedule=[DATASET_CONFIGS['dataset1']],  # This DAG is triggered by updates to orders_dataset
-    start_date=datetime(2024, 1, 1),
-    catchup=False,
-    tags=['kafka', 'multi-message', 'process']
-) as dag1:
-
-    start = DummyOperator(task_id='start')
-    
-    hello_task = PythonOperator(
-        task_id='print_hello',
-        python_callable=print_hello,
-    )
-    
-    date_task = PythonOperator(
-        task_id='print_date',
-        python_callable=print_date,
-    )
-    
-    end = DummyOperator(task_id='end')
-    
-    start >> hello_task >> date_task >> end
-
-
-with DAG(
-    'kafka_tasks_multi_with_process_downstream_2',
-    default_args=default_args,
-    description='A simple DAG with Python tasks',
-    schedule=[DATASET_CONFIGS['dataset2']],  # This DAG is triggered by updates to orders_dataset
-    start_date=datetime(2024, 1, 1),
-    catchup=False,
-    tags=['kafka', 'multi-message', 'process']
-) as dag1:
-
-    start = DummyOperator(task_id='start')
-    
-    hello_task = PythonOperator(
-        task_id='print_hello',
-        python_callable=print_hello,
-    )
-    
-    date_task = PythonOperator(
-        task_id='print_date',
-        python_callable=print_date,
-    )
-    
-    end = DummyOperator(task_id='end')
-    
-    start >> hello_task >> date_task >> end
