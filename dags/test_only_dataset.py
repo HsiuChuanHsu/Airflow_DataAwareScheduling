@@ -21,15 +21,23 @@ from kafka_tools import ConsumerTool, KafkaError, KafkaException
 # dataset2_dataset = Dataset("file:///opt/airflow/files/dataset2_data.json")
 DATASET_CONFIGS = {
     'dataset3': Dataset("file:///opt/airflow/files/dataset3_data.json"),
-    'dataset4': Dataset("file:///opt/airflow/files/dataset4_data.json"),
     'dataset4': Dataset("file:///opt/airflow/files/dataset4_data.json")
 }
+
+EMAIL_POOL = [
+    "alert1@example.com",
+    "alert2@example.com",
+    "alert3@example.com",
+    "monitoring@example.com",
+    
+]
 
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
-    'email_on_failure': False,
+    'email_on_failure': True,
     'email_on_retry': False,
+    'email': "notification@example.com",  # 使用隨機選擇的 email
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
