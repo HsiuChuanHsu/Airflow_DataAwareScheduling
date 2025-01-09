@@ -31,17 +31,15 @@ default_args = {
 }
 
 
-
-# SQL 定義
 # SQL 定義
 CREATE_HISTORY_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS {{ params.schema_name }}.{{ params.table_name }} (
     id SERIAL PRIMARY KEY,
     dag_run_id VARCHAR(250),
     execution_date TIMESTAMP,
-    db_name VARCHAR(100),
-    schema_name VARCHAR(100),
-    table_name VARCHAR(100),
+    bucket_name VARCHAR(100),
+    path_name VARCHAR(250),
+    model_name VARCHAR(100),
     message_timestamp TIMESTAMP,
     kafka_partition INTEGER,
     kafka_offset BIGINT,
@@ -55,15 +53,13 @@ CREATE TABLE IF NOT EXISTS {{ params.schema_name }}.{{ params.table_name }} (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_{{ params.table_name }}_table_name
-    ON {{ params.schema_name }}.{{ params.table_name }}(table_name);
-CREATE INDEX IF NOT EXISTS idx_{{ params.table_name }}_schema_name
-    ON {{ params.schema_name }}.{{ params.table_name }}(schema_name);
+CREATE INDEX IF NOT EXISTS idx_{{ params.table_name }}_bucket_name
+    ON {{ params.schema_name }}.{{ params.table_name }}(bucket_name);
 """
 
 INSERT_HISTORY_SQL = """
     INSERT INTO {schema_name}.{table_name} 
-        (dag_run_id, execution_date, db_name, schema_name, table_name, 
+        (dag_run_id, execution_date, bucket_name, path_name, model_name, 
          message_timestamp, kafka_partition, kafka_offset, message_data,
          api_url, api_status_code, api_success, api_error_message, api_response,
          airflow_version)
@@ -173,15 +169,14 @@ class BatchKafkaOperator(BaseOperator):
 
 def call_api(**context):
     """
-    Call the API with the processed messages and prepare history records
-    Record both successful and failed API calls with details
+    呼叫 API 並準備歷史記錄
     """
     task_instance = context['task_instance']
     dag_run = context['dag_run']
     messages = task_instance.xcom_pull(task_ids='consume_kafka')
     
     if not messages:
-        logging.info("No messages to process")
+        logging.info("沒有訊息需要處理")
         return
     
     api_results = []
@@ -192,13 +187,28 @@ def call_api(**context):
         api_id = message.get('api_id')
         full_url = f"{api_url}definitionif={api_id}"
         
+        # 解析路徑組件
+        object_key = message.get('raw_data', '').get('Key', '')
+        path_parts = object_key.split('/')
+        
+        # 從路徑中提取各個部分
+        # bucket_name 是第一個部分
+        bucket_name = path_parts[0] if len(path_parts) > 0 else ''
+        
+        # path_name 是中間部分 (從第二個元素到倒數第二個元素)
+        path_name_parts = path_parts[1:-1] if len(path_parts) > 2 else []
+        path_name = '/'.join(path_name_parts)
+        
+        # model_name 是最後一個元素
+        model_name = path_parts[-1] if path_parts else ''
+        
         # 準備基本的歷史記錄數據
         history_record = {
             'dag_run_id': dag_run.run_id,
             'execution_date': dag_run.execution_date.isoformat(),
-            'db_name': message.get('bucket'),
-            'schema_name': 'public',
-            'table_name': message.get('object_key'),
+            'bucket_name': bucket_name,
+            'path_name': path_name,
+            'model_name': model_name,
             'message_timestamp': message.get('event_time'),
             'kafka_partition': message.get('partition'),
             'kafka_offset': message.get('offset'),
@@ -208,7 +218,7 @@ def call_api(**context):
         }
         
         try:
-            response = requests.get(full_url, timeout=30)  # 添加超時設置
+            response = requests.get(full_url, timeout=30)
             response_data = None
             
             try:
@@ -216,10 +226,9 @@ def call_api(**context):
             except json.JSONDecodeError:
                 response_data = {'raw_response': response.text}
             
-            # 更新歷史記錄與 API 結果
             history_record.update({
                 'api_status_code': response.status_code,
-                'api_success': response.ok,  # 根據狀態碼判斷（200-299 為 True）
+                'api_success': response.ok,
                 'api_error_message': None,
                 'api_response': json.dumps(response_data)
             })
@@ -230,17 +239,17 @@ def call_api(**context):
                 'success': response.ok,
                 'response': response_data,
                 'event_time': message.get('event_time'),
-                'bucket': message.get('bucket'),
-                'object_key': message.get('object_key')
+                'bucket_name': path_parts[0] if len(path_parts) > 0 else '',
+                'path_name': '/'.join(path_parts[1:-1]) if len(path_parts) > 1 else '',
+                'model_name': path_parts[-1] if path_parts else ''
             })
             
-            logging.info(f"API call completed - URL: {full_url}, Status: {response.status_code}")
+            logging.info(f"API 呼叫完成 - URL: {full_url}, 狀態: {response.status_code}")
             
         except requests.RequestException as e:
             error_msg = f"{type(e).__name__}: {str(e)}"
-            logging.error(f"Error calling API {full_url}: {error_msg}")
+            logging.error(f"呼叫 API 時發生錯誤 {full_url}: {error_msg}")
             
-            # 更新歷史記錄與錯誤信息
             history_record.update({
                 'api_status_code': getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None,
                 'api_success': False,
@@ -259,32 +268,34 @@ def call_api(**context):
             })
         
         finally:
-            # 添加歷史記錄
             history_records.append(history_record)
-            logging.debug(f"Prepared history record for: {full_url}")
+            logging.debug(f"已準備歷史記錄: {full_url}")
     
     if history_records:
         task_instance.xcom_push(key='history_records', value=history_records)
-        logging.info(f"Pushed {len(history_records)} history records to XCom")
+        logging.info(f"已推送 {len(history_records)} 筆歷史記錄到 XCom")
     else:
-        logging.warning("No history records were created")
+        logging.warning("沒有建立歷史記錄")
     
     return api_results
 
-def insert_history_records(**context):
+def insert_history_records(
+        schema_name, 
+        table_name, 
+        consume_task_id='consume_kafka',
+        postgres_conn_id='postgres_default',
+        **context):
     """
     Insert history records into PostgreSQL with API call results
     """
     task_instance = context['task_instance']
-    history_records = task_instance.xcom_pull(key='history_records', task_ids='call_api')
+    history_records = task_instance.xcom_pull(key='history_records', task_ids=consume_task_id)
     
     if not history_records:
         logging.info("No history records to insert")
         return
     
-    pg_hook = PostgresHook(postgres_conn_id='postgres_default')
-    schema_name = 'public'
-    table_name = 'minio_events_history'
+    pg_hook = PostgresHook(postgres_conn_id=postgres_conn_id)
     
     insert_sql = INSERT_HISTORY_SQL.format(
         schema_name=schema_name,
@@ -297,9 +308,9 @@ def insert_history_records(**context):
                 cur.execute(insert_sql, (
                     record['dag_run_id'],
                     record['execution_date'],
-                    record['db_name'],
-                    record['schema_name'],
-                    record['table_name'],
+                    record['bucket_name'],
+                    record['path_name'],
+                    record['model_name'],
                     record['message_timestamp'],
                     record['kafka_partition'],
                     record['kafka_offset'],
@@ -331,14 +342,16 @@ with DAG(
     catchup=False,
     tags=['kafka', 'minio', 'process']
 ) as dag:
+    schema_name = 'public'
+    table_name = 'minio_events_history'
     # 創建歷史記錄表
     create_history_table = PostgresOperator(
         task_id='create_history_table',
         postgres_conn_id='postgres_default',
         sql=CREATE_HISTORY_TABLE_SQL,
         params={
-            'schema_name': 'public',
-            'table_name': 'minio_events_history'
+            'schema_name': schema_name,
+            'table_name': table_name
         }
     )
 
@@ -361,7 +374,13 @@ with DAG(
     insert_history = PythonOperator(
         task_id='insert_history',
         python_callable=insert_history_records,
-        provide_context=True
+        provide_context=True,
+        op_kwargs={
+            'schema_name': schema_name,
+            'table_name': table_name,
+            'consume_task_id': 'call_api',  
+            'postgres_conn_id': 'postgres_default'
+        },
     )
     
     # 設定任務依賴關係
