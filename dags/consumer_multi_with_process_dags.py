@@ -332,5 +332,6 @@ with DAG(
     )
 
     # 設置任務依賴
-    consume_task >> process_task
-    consume_task >> create_table_task >> store_history_task
+    # consume_task >> process_task
+    # consume_task >> create_table_task >> store_history_task
+    create_table_task >> consume_task >> [ store_history_task, process_task ] 
